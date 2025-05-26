@@ -1,0 +1,888 @@
+const API_KEY = 'vuk55BjzahCqvwO7wqTZ8A9=rRVm2srK'; // 1fichier api key
+const ROOT_FOLDER_ID = '0';
+const SECRET_KEY = '8924bcdd2dd98765456654518230a'; 
+
+addEventListener('fetch', event => {
+    event.respondWith(handleRequest(event.request))
+});
+
+const username = 'AH'; // remote index usernaem
+const password = 'CIPHER'; // remote index password
+
+
+const hash = btoa(`${username}:${password}`);
+
+function xorEncryptDecrypt(input, key) {
+    const keyLength = key.length;
+    let output = '';
+
+    for (let i = 0; i < input.length; i++) {
+        const inputChar = input.charCodeAt(i);
+        const keyChar = key.charCodeAt(i % keyLength);
+        const encryptedChar = inputChar ^ keyChar;
+        output += String.fromCharCode(encryptedChar);
+    }
+
+    return output;
+}
+
+function toBase64(str) {
+    return btoa(unescape(encodeURIComponent(str)));
+}
+
+function fromBase64(b64) {
+    return decodeURIComponent(escape(atob(b64)));
+}
+
+const listAllFolders = async (rootId = '0', currentPath = '') => {
+    try {
+        const response = await fetch(`https://api.1fichier.com/v1/folder/ls.cgi`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${API_KEY}`
+            },
+            body: JSON.stringify({
+                folder_id: rootId,
+                files: 0  
+            })
+        });
+        
+        const data = await response.json();
+        let folderList = [];
+
+        if (currentPath) {
+            folderList.push({
+                id: rootId,
+                name: currentPath.split('/').pop() || 'Root',
+                path: currentPath
+            });
+        }
+
+        if (data.sub_folders && data.sub_folders.length > 0) {
+            for (const folder of data.sub_folders) {
+                const subfolderPath = currentPath ? `${currentPath}/${folder.name}` : folder.name;
+                const subfolders = await listAllFolders(folder.id, subfolderPath);
+                folderList = folderList.concat(subfolders);
+            }
+        }
+
+        return folderList;
+    } catch (error) {
+        console.error('Error listing folders:', error);
+        return [];
+    }
+};
+
+async function handleRemoteUpload(request) {
+    try {
+        const requestData = await request.json();
+        const { urls, folder_id } = requestData;
+
+        if (!Array.isArray(urls) || urls.length === 0) {
+            return new Response(
+                JSON.stringify({ error: 'Invalid input: Missing URLs.' }),
+                { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+        }
+
+        const payload = {
+            urls: urls,
+            folder_id: folder_id ? parseInt(folder_id, 10) : parseInt(ROOT_FOLDER_ID, 10)
+        };
+
+        const apiResponse = await fetch('https://api.1fichier.com/v1/remote/request.cgi', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const result = await apiResponse.json();
+        return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+        return new Response(
+            JSON.stringify({ error: error.message || 'Internal Server Error' }),
+            { status: 500, headers: { 'Content-Type': 'application/json' } }
+        );
+    }
+}
+
+
+
+async function handleCreateFolder(request) {
+    try {
+        const { name, folder_id } = await request.json();
+
+        if (!name || name.length > 250) {
+            return new Response(JSON.stringify({ 
+                error: 'Invalid folder name. Must be between 1 and 250 characters.' 
+            }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        const payload = {
+            name: name,
+            folder_id: folder_id && folder_id !== '0' ? parseInt(folder_id, 10) : 0
+        };
+
+        const apiResponse = await fetch('https://api.1fichier.com/v1/folder/mkdir.cgi', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!apiResponse.ok) {
+            const errorText = await apiResponse.text(); 
+            console.error('API Error Response:', errorText);
+            return new Response(JSON.stringify({ 
+                error: 'Failed to create folder: Invalid API response',
+                details: errorText
+            }), {
+                status: apiResponse.status,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        const data = await apiResponse.json();
+
+        if (data.status === 'KO') {
+            return new Response(JSON.stringify({ 
+                error: data.message || 'Failed to create folder'
+            }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        return new Response(JSON.stringify({
+            status: 'OK',
+            folder_id: data.folder_id,
+            name: data.name
+        }), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (error) {
+        console.error('Folder creation error:', error);
+        return new Response(JSON.stringify({ 
+            error: error.message || 'Internal Server Error'
+        }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+}
+
+
+
+// https://t.me/Geek_Spot
+
+function generateRemotePage() {
+    const html = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Remote Upload - 1fichier</title>
+        <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #2f343f;
+            color: white;
+            text-align: center;
+            padding: 20px;
+        }
+
+        input, textarea, button, select {
+            width: 100%;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 6px;
+            border: 1px solid #444;
+            box-sizing: border-box;
+            font-size: 16px;
+            background-color: #3b414d;
+            color: white;
+            outline: 0;
+        }
+
+        textarea {
+            height: 200px;
+            resize: none;
+            outline: 0;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin: 15px 0;
+        }
+
+        .button-group button {
+            margin: 0;
+        }
+
+        #submitButton {
+            background-color: #0074D9;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background-color 0.4s;
+        }
+
+        #createFolderButton {
+            background-color: #0074D9;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background-color 0.4s;
+        }
+
+        #submitButton:hover {
+            background-color: #005b99;
+        }
+
+        #createFolderButton:hover {
+            background-color: #005b99;
+        }
+
+        pre {
+            text-align: left;
+            background-color: #1e1e1e;
+            padding: 10px;
+            border-radius: 4px;
+            color: #fff;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .folder-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        #newFolderInput {
+            flex-grow: 1;
+            margin: 0;
+        }
+
+        #folderSelect {
+            margin-bottom: 15px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .char-counter {
+            font-size: 12px;
+            color: #aaa;
+            text-align: right;
+            margin-top: -10px;
+        }
+
+        .char-counter.error {
+            color: #ff4444;
+        }
+        </style>
+    </head>
+    <body>
+        <h1>Remote Upload - 1fichier</h1>
+        
+        <div class="folder-controls">
+            <select id="folderSelect">
+                <option value="0">Root Folder</option>
+            </select>
+
+            <button id="createFolderButton">Create Folder</button>
+        </div>
+        <div style="flex-grow: 1;">
+        <input type="text" id="newFolderInput" class="hidden" placeholder="Enter folder name" maxlength="200">
+        <div id="charCounter" class="char-counter hidden">0/200</div>
+    </div>
+        <textarea id="linkInput" placeholder="Enter links (one per line)"></textarea>
+        <button id="submitButton">Submit</button>
+        <pre id="responseOutput"></pre>
+        
+        <script>
+            // Fetch and populate folder list
+            async function fetchFolders() {
+                const folderSelect = document.getElementById('folderSelect');
+                
+                try {
+                    const response = await fetch('/api/folders');
+                    const folders = await response.json();
+                    
+                    if (folders.error) {
+                        throw new Error(folders.error);
+                    }
+                    
+                    // Clear existing options except the root folder
+                    while (folderSelect.options.length > 1) {
+                        folderSelect.remove(1);
+                    }
+
+                    // Add fetched folders
+                    folders.forEach(folder => {
+                        const option = document.createElement('option');
+                        option.value = folder.id;
+                        option.textContent = folder.name;
+                        folderSelect.appendChild(option);
+                    });
+                } catch (error) {
+                    console.error('Error fetching folders:', error);
+                    alert('Could not fetch folder list: ' + error.message);
+                }
+            }
+
+            // Call fetchFolders when page loads
+            fetchFolders();
+
+            // Character counter for folder name
+            const newFolderInput = document.getElementById('newFolderInput');
+            const charCounter = document.getElementById('charCounter');
+            
+            newFolderInput.addEventListener('input', () => {
+                const length = newFolderInput.value.length;
+                charCounter.textContent = length + '/200';
+                charCounter.className = 'char-counter' + (length > 200 ? ' error' : '');
+            });
+
+            // Handle folder creation
+            const createFolderButton = document.getElementById('createFolderButton');
+            let isCreatingFolder = false;
+
+            createFolderButton.addEventListener('click', async () => {
+                if (!isCreatingFolder) {
+                    // Show input field
+                    newFolderInput.classList.remove('hidden');
+                    charCounter.classList.remove('hidden');
+                    createFolderButton.textContent = 'Save Folder';
+                    isCreatingFolder = true;
+                } else {
+                    // Create folder
+                    const folderName = newFolderInput.value.trim();
+                    const parentFolder = document.getElementById('folderSelect').value;
+
+                    if (!folderName) {
+                        alert('Please enter a folder name');
+                        return;
+                    }
+
+                    if (folderName.length > 200) {
+                        alert('Folder name must be 200 characters or less');
+                        return;
+                    }
+
+                    try {
+                        const response = await fetch('/api/folders', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                name: folderName,
+                                folder_id: parentFolder
+                            })
+                        });
+
+                        const result = await response.json();
+                        
+                        if (result.error) {
+                            throw new Error(result.error);
+                        }
+
+                        // Reset UI
+                        newFolderInput.classList.add('hidden');
+                        charCounter.classList.add('hidden');
+                        newFolderInput.value = '';
+                        createFolderButton.textContent = 'Create Folder';
+                        isCreatingFolder = false;
+
+                        // Refresh folder list
+                        await fetchFolders();
+                    } catch (error) {
+                        console.error('Error creating folder:', error);
+                        alert('Failed to create folder: ' + error.message);
+                    }
+                }
+            });
+
+            document.getElementById('submitButton').addEventListener('click', async () => {
+                const links = document.getElementById('linkInput').value
+                    .split('\\n')
+                    .map(link => link.trim())
+                    .filter(link => link);
+
+                const selectedFolder = document.getElementById('folderSelect').value;
+
+                if (links.length === 0) {
+                    alert('Please provide at least one link.');
+                    return;
+                }
+
+                const payload = {
+                    urls: links,
+                    folder_id: selectedFolder
+                };
+
+                const responseOutput = document.getElementById('responseOutput');
+                responseOutput.textContent = 'Sending request...';
+
+                try {
+                    const response = await fetch('/api/remote-upload', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(payload)
+                    });
+
+                    const result = await response.json();
+                    responseOutput.textContent = JSON.stringify(result, null, 2);
+                } catch (error) {
+                    responseOutput.textContent = 'Error: ' + error.message;
+                }
+            });
+        </script>
+    </body>
+    
+    </html>
+    `;
+    return new Response(html, { headers: { 'Content-Type': 'text/html' } });
+}
+
+const handleRequest = async (request) => {
+    const url = new URL(request.url);
+    let pathname = url.pathname;
+
+    if (pathname.endsWith('/')) {
+        pathname = pathname.slice(0, -1);
+    }
+    if (pathname === '/api/folders' && request.method === 'POST') {
+        const authHeader = request.headers.get('Authorization');
+        if (!authHeader || authHeader !== `Basic ${hash}`) {
+            return new Response(null, {
+                status: 401,
+                headers: {
+                    'WWW-Authenticate': 'Basic'
+                }
+            });
+        }
+        return handleCreateFolder(request);
+    }
+    if (pathname === '/api/remote-upload' && request.method === 'POST') {
+        return handleRemoteUpload(request);
+    }
+
+    if (pathname === '/api/folders' && request.method === 'GET') {
+        const authorizationHeader = request.headers.get('Authorization')
+        if (!authorizationHeader || authorizationHeader !== `Basic ${hash}`) {
+           return new Response(null, {
+            status: 401,
+            headers: {
+              'WWW-Authenticate': 'Basic'
+            }
+          });
+        }
+
+
+        const folders = await listAllFolders();
+        return new Response(JSON.stringify(folders), {
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            }
+        });
+    }
+
+    if (pathname === '/remote') {
+        const authorizationHeader = request.headers.get('Authorization')
+        if (!authorizationHeader || authorizationHeader !== `Basic ${hash}`) {
+           return new Response(null, {
+            status: 401,
+            headers: {
+              'WWW-Authenticate': 'Basic'
+            }
+          });
+        }
+        return generateRemotePage();
+    }
+
+    const path = decodeURIComponent(pathname).split('/').filter(Boolean);
+
+    const formatFileSize = (size) => {
+        if (size < 1024) {
+            return size.toFixed(2) + ' B';
+        } else if (size < 1024 * 1024) {
+            return (size / 1024).toFixed(2) + ' K‌B';
+        } else if (size < 1024 * 1024 * 1024) {
+            return (size / (1024 * 1024)).toFixed(2) + ' M‌B';
+        } else {
+            return (size / (1024 * 1024 * 1024)).toFixed(2) + ' G‌B';
+        }
+    };
+
+    const findFolder = async (id, path) => {
+        try {
+            const response = await fetch(`https://api.1fichier.com/v1/folder/ls.cgi`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${API_KEY}`
+                },
+                body: JSON.stringify({
+                    folder_id: id,
+                    files: 1
+                })
+            });
+            
+            const data = await response.json();
+    
+            if (path.length === 0) {
+                return data;
+            }
+    
+            const nextFolderName = path[0];
+    
+            if (Array.isArray(data.sub_folders)) {
+                for (const folder of data.sub_folders) {
+                    if (folder.name === nextFolderName) {
+                        return findFolder(folder.id, path.slice(1));
+                    }
+                }
+            }
+    
+            return null;
+        }
+        catch (error) {
+            console.error(error);
+            return null;
+        }
+    };
+
+    const findFile = async (folderId, path) => {
+        try {
+            const data = await findFolder(folderId, path.slice(0, -1));
+            const fileName = path[path.length - 1];
+    
+            if (data && data.items && data.items.length > 0) {
+                const file = data.items.find(item => item.filename === fileName);
+                return file;
+            }
+            
+            return null;
+        } catch (error) {
+            console.error(error);
+            return null;
+        }
+    };
+    
+    if (request.method === 'GET' && path.length > 0) {
+        const file = await findFile(ROOT_FOLDER_ID, path);
+        if (file) {
+            const response = await fetch(`https://api.1fichier.com/v1/download/get_token.cgi`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${API_KEY}`
+                },
+                body: JSON.stringify({
+                    url: file.url,
+                    inline: 1
+                })
+            });
+    
+            const data = await response.json();
+            if (data.status === 'OK') {
+                const fileUrl = data.url;
+    
+                const range = request.headers.get('Range');
+                if (range) {
+                    const parts = range.replace(/bytes=/, "").split("-");
+                    const start = parseInt(parts[0], 10);
+                    const end = parts[1] ? parseInt(parts[1], 10) : undefined;
+    
+                    const fileResponse = await fetch(fileUrl, {
+                        headers: {
+                            'Range': `bytes=${start}-${end || ''}`
+                        }
+                    });
+    
+                    const contentLength = fileResponse.headers.get('Content-Length');
+                    const fileType = file['content-type'] || 'application/octet-stream';
+    
+                    const newHeaders = new Headers({
+                        'Content-Type': fileType,
+                        'Access-Control-Allow-Origin': '*',
+                        'Content-Range': `bytes ${start}-${end || contentLength - 1}/${contentLength}`
+                    });
+    
+                    return new Response(fileResponse.body, {
+                        status: 206,
+                        headers: newHeaders
+                    });
+                } else {
+                    const fileResponse = await fetch(fileUrl);
+                    const fileType = file['content-type'] || 'application/octet-stream';
+                    return new Response(fileResponse.body, {
+                        headers: {'Content-Type': fileType, 'Access-Control-Allow-Origin': '*'}
+                    });
+                }
+            } else {
+                return new Response(data.message);
+            }
+        }
+    }
+    const generateFileExplorer = async () => {
+        try {
+            const data = await findFolder(ROOT_FOLDER_ID, path);
+            let modifiedPath = `${path.join('/')}`;
+            let html = `
+              <!DOCTYPE html>
+              <html>
+              <head>
+                  <meta name="cdn-site-verification" content="sa01t87betIRtJ"/>
+                  <title>Index of /${modifiedPath}</title>
+                  <link rel="shortcut icon" href="data:image/x-icon;base64," />
+                  <meta charset="utf-8">
+                  <style>
+                      * { 
+                          font-family: 'IRANSans', Arial, sans-serif;
+                          letter-spacing: 0.6px; 
+                          margin: 0;
+                          padding: 0;
+                          box-sizing: border-box;
+                      }
+                      body {
+                          background-color: #2f343f;
+                          color: #FFFFFF;
+                          max-width: 1800px;
+                          margin: 0 auto;
+                          padding: 20px;
+                      }
+                      .search-container {
+                          display: flex;
+                          justify-content: center;
+                          margin-bottom: 20px;
+                      }
+                      #searchInput {
+                          width: 50%;
+                          padding: 10px;
+                          font-size: 1em;
+                          background-color: #3D4351;
+                          color: #FFFFFF;
+                          border: 1px solid #187ed6;
+                          border-radius: 5px;
+                      }
+                      h1 {
+                          text-align: center;
+                          font-weight: 300;
+                          margin-bottom: 20px;
+                      }
+                      table {
+                          width: 100%;
+                          border-collapse: collapse;
+                          font-size: 0.9em;
+                      }
+                      thead {
+                          background-color: #3D4351;
+                      }
+                      th, td {
+                          padding: 10px;
+                          text-align: left;
+                          border-bottom: 1px solid #4a4f5e;
+                      }
+                      tr:hover {
+                          background-color: #3D4351;
+                      }
+                      a {
+                          color: #FFFFFF;
+                          text-decoration: none;
+                      }
+                      a:hover {
+                          text-decoration: underline;
+                          color: #187ed6;
+                      }
+                      .hidden {
+                          display: none;
+                      }
+                      .folder-icon, .file-icon {
+                          vertical-align: middle;
+                          margin-left: 10px;
+                      }
+                  </style>
+              </head>
+              <body>
+                  <h1>Directory: /${modifiedPath}/</h1> 
+                  
+                  <div class="search-container">
+                      <input type="text" id="searchInput" placeholder="Search..." oninput="filterTable()">
+                  </div>
+    
+                  <table>
+                      <thead>
+                          <tr>
+                            <th><a href="?orderby=name">File Name ▾</a></th>
+                            <th><a href="?orderby=size">File Size ▾</a></th>
+                            <th><a href="?orderby=date">Date ▾</a></th>
+                          </tr>
+                      </thead>
+                      <tbody id="fileTableBody">
+            `;
+           
+            // Parent directory link
+            if (path.length > 0) {
+                html += `
+                    <tr class="searchable">
+                        <td>
+                            <a href="../">
+                                <svg class="folder-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#187ed6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                                    <line x1="12" y1="11" x2="12" y2="17"></line>
+                                    <line x1="9" y1="14" x2="15" y2="14"></line>
+                                </svg>
+                               ../
+                            </a>
+                        </td>
+                        <td>-</td>
+                        <td>-</td>
+                    </tr>
+                `;
+            }
+           
+            // Process folders and files
+            if (data) {
+                // Sorting logic
+                const orderBy = url.searchParams.get('orderby');
+                if (orderBy === 'size') {
+                    data.items.sort((b, a) => a.size - b.size);
+                } else if (orderBy === 'date') {
+                    data.items.sort((a, b) => new Date(b.date) - new Date(a.date));
+                } else {
+                    data.items.sort((a, b) => a.filename.localeCompare(b.filename));
+                }
+            
+                // Display subfolders
+                if (data.sub_folders && data.sub_folders.length > 0) {
+                    for (const folder of data.sub_folders) {
+                        html += `
+                        <tr class="searchable">
+                            <td>
+                                <a href="/${path.length > 0 ? path.join('/') + '/' : ''}${folder.name}">
+                                    <svg class="folder-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="#187ed6">
+                                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                                    </svg>
+                                    ${folder.name} /
+                                </a>
+                            </td>
+                            <td>-</td>
+                            <td>-</td>
+                        </tr>
+                        `;
+                    }
+                }
+            
+                // Display files
+                if (data.items && data.items.length > 0) {
+                    for (const file of data.items) {
+                        const proxiedlink = `https://nimeshkon.195008.ir.cdn.ir/${path.length > 0 ? path.join('/') + '/' : ''}${file.filename}`;
+                        const encryptedData = toBase64(xorEncryptDecrypt(JSON.stringify({ url: proxiedlink, filename: file.filename }), SECRET_KEY));
+                        const proxiedUrl = `https://illilllilllliiiliili.pages.dev/download?data=${encodeURIComponent(encryptedData)}`;
+    
+                        html += `
+                        <tr class="searchable">
+                            <td>
+                                <a href="${proxiedlink}" title="${file.filename}">
+                                    <svg class="file-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#187ed6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                                        <polyline points="14 2 14 8 20 8"/>
+                                    </svg>
+                                    ${file.filename}
+                                </a>
+                            </td>
+                            <td>${formatFileSize(file.size)}</td>
+                            <td>${file.date}</td>
+                        </tr>
+                        `; 
+                    }
+                } else {
+                    html += `
+                    <tr>
+                        <td colspan="3">پوشه خالی است</td>
+                    </tr>`;
+                }
+            } else {
+                html += `
+                <tr>
+                    <td colspan="3">پوشه یافت نشد</td>
+                </tr>`;
+            }
+            
+            // https://t.me/Geek_Spot
+            html += `
+                    </tbody>
+                </table>
+    
+                <script>
+                    function filterTable() {
+                        const searchInput = document.getElementById('searchInput');
+                        const filter = searchInput.value.toLowerCase();
+                        const rows = document.getElementsByClassName('searchable');
+                        
+                        let visibleRowCount = 0;
+                        for (let row of rows) {
+                            const text = row.textContent.toLowerCase();
+                            if (text.includes(filter)) {
+                                row.classList.remove('hidden');
+                                visibleRowCount++;
+                            } else {
+                                row.classList.add('hidden');
+                            }
+                        }
+    
+                        // Show "No results" message if no rows match
+                        const noResultsRow = document.getElementById('no-results-row');
+                        const tbody = document.getElementById('fileTableBody');
+                        
+                        if (visibleRowCount === 0) {
+                            if (!noResultsRow) {
+                                const tr = document.createElement('tr');
+                                tr.id = 'no-results-row';
+                                tr.innerHTML = '<td colspan="3">نتیجه‌ای یافت نشد</td>';
+                                tbody.appendChild(tr);
+                            }
+                        } else if (noResultsRow) {
+                            noResultsRow.remove();
+                        }
+                    }
+                </script>
+            </body>
+            </html>
+        `;
+          
+        return new Response(html, { 
+            headers: { 
+                'Content-Type': 'text/html', 
+                'Access-Control-Allow-Origin': '*' 
+            } 
+        });
+        } catch (error) {
+            console.error(error);
+            return new Response('پوشه خالی است لطفا اول فایلی را درون آن اپلود کنید .', { status: 500 });
+        }
+    };
+return generateFileExplorer();
+
+};
+
+// https://t.me/Geek_Spot

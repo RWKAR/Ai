@@ -1,0 +1,225 @@
+// --- START OF FILE worker.js ---
+
+// TODO: Store API_KEY as a secret in Worker settings and access via env.API_KEY
+// const API_KEY = env.API_KEY;
+const API_KEY = 'YOUR_API_KEY'; // https://1fichier.com/console/params.pl
+const ROOT_FOLDER_ID = '0'; // 0 = root folder
+
+addEventListener('fetch', event => {
+  event.respondWith(handleRequest(event.request, event.env)); // Pass env for secrets
+});
+
+async function handleRequest(request, env) {
+  const url = new URL(request.url);
+  let pathname = url.pathname;
+
+  // Normalize pathname: remove trailing slash if not root, ensure leading slash
+  if (pathname !== '/' && pathname.endsWith('/')) {
+    pathname = pathname.slice(0, -1);
+  }
+  if (!pathname.startsWith('/')) {
+    pathname = '/' + pathname;
+  }
+
+  const pathSegments = decodeURIComponent(pathname).split('/').filter(Boolean);
+
+  async function fetchFrom1Fichier(endpoint, bodyPayload) {
+    const response = await fetch(`https://api.1fichier.com/v1/${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${API_KEY}` // Or use env.API_KEY if set as secret
+      },
+      body: JSON.stringify(bodyPayload)
+    });
+    if (!response.ok) {
+      console.error(`1Fichier API Error (${endpoint}): ${response.status} ${response.statusText}`);
+      const errorData = await response.json().catch(() => ({ message: "Unknown API error" }));
+      throw new Error(errorData.message || "Failed to fetch data from 1Fichier API");
+    }
+    return response.json();
+  }
+
+  async function findPathTarget(currentFolderId, segments) {
+    const data = await fetchFrom1Fichier('folder/ls.cgi', {
+      folder_id: currentFolderId,
+      files: 1,
+      details: 1 // Get more details like content-type if available
+    });
+
+    if (segments.length === 0) { // Target is the current folder
+      return { type: 'folder', data: data, id: currentFolderId };
+    }
+
+    const nextSegmentName = segments[0];
+
+    // Check subfolders
+    if (Array.isArray(data.sub_folders)) {
+      for (const folder of data.sub_folders) {
+        if (folder.name === nextSegmentName) {
+          return findPathTarget(folder.id, segments.slice(1));
+        }
+      }
+    }
+
+    // Check files (only if it's the last segment)
+    if (segments.length === 1 && Array.isArray(data.items)) {
+      for (const file of data.items) {
+        if (file.filename === nextSegmentName) {
+          return { type: 'file', data: file, id: file.url }; // Use file.url as its unique ID for download token
+        }
+      }
+    }
+    return null; // Not found
+  }
+
+  try {
+    const target = await findPathTarget(ROOT_FOLDER_ID, pathSegments);
+
+    if (target && target.type === 'file') {
+      // Request download token
+      const tokenData = await fetchFrom1Fichier('download/get_token.cgi', {
+        url: target.id, // target.id here is the file.url
+        // inline: 1, // Requesting inline might not be necessary if we redirect
+      });
+
+      if (tokenData.status === 'OK' && tokenData.url) {
+        // Instead of proxying, redirect to the 1fichier download URL
+        // This allows the browser to handle range requests directly with 1fichier
+        return Response.redirect(tokenData.url, 302);
+      } else {
+        return new Response(`Error getting download link: ${tokenData.message || 'Unknown error'}`, { status: 500, headers: { 'Content-Type': 'text/plain' } });
+      }
+    }
+
+    // If it's a folder or not found, render HTML
+    let htmlContent = '';
+    const currentPathDisplay = pathSegments.length > 0 ? '/' + pathSegments.join('/') : '/';
+
+    if (target && target.type === 'folder') {
+      const folderData = target.data;
+      htmlContent += `<h1>Index of ${currentPathDisplay}</h1>`;
+      htmlContent += `<ul class="file-list">`;
+
+      // Parent directory link
+      if (pathSegments.length > 0) {
+        const parentPath = pathname.substring(0, pathname.lastIndexOf('/')) || '/';
+        htmlContent += `<li class="folder-item"><a href="${parentPath}">📁 ../</a></li>`;
+      }
+
+      // Subfolders
+      if (Array.isArray(folderData.sub_folders)) {
+        folderData.sub_folders.sort((a,b) => a.name.localeCompare(b.name)).forEach(item => {
+          const folderUrl = `${pathname === '/' ? '' : pathname}/${encodeURIComponent(item.name)}`;
+          htmlContent += `<li class="folder-item"><a href="${folderUrl}">📁 ${item.name}/</a></li>`;
+        });
+      }
+
+      // Files
+      if (Array.isArray(folderData.items)) {
+        folderData.items.sort((a,b) => a.filename.localeCompare(b.filename)).forEach(item => {
+          const fileUrl = `${pathname === '/' ? '' : pathname}/${encodeURIComponent(item.filename)}`;
+          const fileSize = item.size ? formatBytes(item.size) : '';
+          htmlContent += `<li class="file-item"><a href="${fileUrl}">📄 ${item.filename}</a> <span class="file-size">(${fileSize})</span></li>`;
+        });
+      }
+      htmlContent += `</ul>`;
+    } else { // Folder not found or other error
+      htmlContent += `<h1>Error</h1><p>The requested path ${currentPathDisplay} was not found or is not accessible.</p>`;
+      if (pathSegments.length > 0) {
+         const parentPath = pathname.substring(0, pathname.lastIndexOf('/')) || '/';
+         htmlContent += `<p><a href="${parentPath}">Go to parent directory</a></p>`;
+      }
+    }
+
+    return new Response(generateFullHtml(currentPathDisplay, htmlContent), {
+      headers: { 'Content-Type': 'text/html; charset=utf-8' }
+    });
+
+  } catch (error) {
+    console.error("Request handling error:", error);
+    const errorHtml = generateFullHtml("Error", `<h1>An Error Occurred</h1><p>${error.message}</p>`);
+    return new Response(errorHtml, { status: 500, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  }
+}
+
+function formatBytes(bytes, decimals = 2) {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+function generateFullHtml(title, bodyContent) {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Index of ${title}</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f4f4f4;
+      color: #333;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background-color: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      border-bottom: 2px solid #eee;
+      padding-bottom: 10px;
+      margin-top: 0;
+    }
+    ul.file-list {
+      list-style-type: none;
+      padding: 0;
+    }
+    ul.file-list li {
+      padding: 8px 0;
+      border-bottom: 1px solid #eee;
+    }
+    ul.file-list li:last-child {
+      border-bottom: none;
+    }
+    ul.file-list a {
+      text-decoration: none;
+      color: #007bff;
+      font-weight: 500;
+    }
+    ul.file-list a:hover {
+      text-decoration: underline;
+    }
+    .file-size {
+      color: #666;
+      font-size: 0.9em;
+      margin-left: 10px;
+    }
+    .folder-item a::before {
+      content: "📁 "; /* Folder emoji */
+    }
+    .file-item a::before {
+      content: "📄 "; /* File emoji */
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    ${bodyContent}
+  </div>
+</body>
+</html>
+  `;
+}
+// --- END OF FILE worker.js ---
